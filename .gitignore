@@ -19,6 +19,7 @@ env/
 .DS_Store?
 ._*
 .idea/
+.vscode/
 *.swp
 
 # SQLite / runtime data
