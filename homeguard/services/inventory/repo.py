@@ -1,4 +1,4 @@
-"""Repository layer — all database operations for inventory-service."""
+"""Database repository layer for inventory-service."""
 from __future__ import annotations
 
 import json
@@ -16,10 +16,7 @@ from libs.common.schemas import DeviceStatus
 logger = get_logger(__name__, service="inventory")
 
 
-# ---------------------------------------------------------------------------
-# Device
-# ---------------------------------------------------------------------------
-
+# Device operations
 async def upsert_device(
     session: AsyncSession,
     mac: str,
@@ -27,15 +24,12 @@ async def upsert_device(
     hostname: str | None = None,
     scan_id: str | None = None,
 ) -> tuple[Device, bool]:
-    """
-    Find or create a device by MAC. Returns (device, is_new).
-    Also records a Sighting row.
-    """
+    """Find or create a device by MAC. Returns (device, is_new) and appends sighting."""
     result = await session.execute(select(Device).where(Device.current_mac == mac))
     device = result.scalar_one_or_none()
     is_new = device is None
-
     now = datetime.now(timezone.utc)
+
     if is_new:
         device = Device(
             id=str(uuid.uuid4()),
@@ -54,7 +48,7 @@ async def upsert_device(
         if hostname and not device.hostname:
             device.hostname = hostname
 
-    # Always record a sighting
+    # Log sighting audit entry
     sighting = Sighting(
         id=str(uuid.uuid4()),
         device_id=device.id,
@@ -64,7 +58,7 @@ async def upsert_device(
         seen_at=now,
     )
     session.add(sighting)
-    await session.flush()  # get device.id before returning
+    await session.flush()
     return device, is_new
 
 
@@ -97,6 +91,7 @@ async def list_devices(
         filters.append(Device.first_seen >= new_since)
     if filters:
         stmt = stmt.where(and_(*filters))
+
     stmt = stmt.order_by(Device.last_seen.desc())
     result = await session.execute(stmt)
     return list(result.scalars().all())
@@ -118,6 +113,7 @@ async def patch_device(
     device = await get_device(session, device_id)
     if device is None:
         return None
+
     if user_label is not None:
         device.user_label = user_label
     if status is not None:
@@ -136,14 +132,12 @@ async def patch_device(
         device.trust_score = trust_score
     if trust_reasons is not None:
         device.trust_reasons = json.dumps(trust_reasons)
+
     await session.flush()
     return device
 
 
-# ---------------------------------------------------------------------------
-# Sightings
-# ---------------------------------------------------------------------------
-
+# Sightings history
 async def list_sightings(session: AsyncSession, device_id: str, limit: int = 50) -> list[Sighting]:
     result = await session.execute(
         select(Sighting)
@@ -154,10 +148,7 @@ async def list_sightings(session: AsyncSession, device_id: str, limit: int = 50)
     return list(result.scalars().all())
 
 
-# ---------------------------------------------------------------------------
-# Scans
-# ---------------------------------------------------------------------------
-
+# Scan records
 async def create_scan(session: AsyncSession, scan_type: str = "quick") -> Scan:
     scan = Scan(id=str(uuid.uuid4()), type=scan_type, status="running")
     session.add(scan)
@@ -188,10 +179,7 @@ async def list_scans(session: AsyncSession, limit: int = 20) -> list[Scan]:
     return list(result.scalars().all())
 
 
-# ---------------------------------------------------------------------------
 # Alerts
-# ---------------------------------------------------------------------------
-
 async def create_alert(
     session: AsyncSession,
     alert_type: str,
@@ -233,10 +221,7 @@ async def acknowledge_alert(session: AsyncSession, alert_id: str) -> Alert | Non
     return alert
 
 
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
-
+# Key-value settings
 async def get_setting(session: AsyncSession, key: str, default: Any = None) -> Any:
     result = await session.execute(select(Setting).where(Setting.key == key))
     row = result.scalar_one_or_none()
@@ -256,12 +241,9 @@ async def set_setting(session: AsyncSession, key: str, value: Any) -> None:
     await session.flush()
 
 
-# ---------------------------------------------------------------------------
-# Changes
-# ---------------------------------------------------------------------------
-
+# Changes and diffs
 def _ensure_utc(dt: datetime) -> datetime:
-    """Make a datetime timezone-aware (UTC) if it is naive."""
+    """Make datetime timezone-aware if sqlite returned naive UTC."""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
@@ -271,7 +253,6 @@ async def devices_changed_since(
     session: AsyncSession,
     since: datetime,
 ) -> dict[str, list[Device]]:
-    """Return new, gone (not seen since), and status-changed devices since `since`."""
     since = _ensure_utc(since)
     all_devices = await list_devices(session)
     new_devices = [d for d in all_devices if _ensure_utc(d.first_seen) >= since]

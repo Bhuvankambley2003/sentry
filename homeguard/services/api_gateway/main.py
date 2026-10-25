@@ -43,10 +43,8 @@ logger = get_logger(__name__, service="api_gateway")
 settings = get_settings()
 bus = get_bus()
 
-# ---------------------------------------------------------------------------
-# WebSocket connection manager
-# ---------------------------------------------------------------------------
 
+# Tracks active websocket clients for real-time frontend event pushing
 class ConnectionManager:
     def __init__(self) -> None:
         self._connections: list[WebSocket] = []
@@ -75,14 +73,11 @@ manager = ConnectionManager()
 
 
 async def _event_fan_out(topic: str, data: dict[str, Any]) -> None:
-    """Forward Redis events to WebSocket clients."""
+    """Forward Redis events to connected WebSocket clients."""
     await manager.broadcast({"topic": topic, "data": data})
 
 
-# ---------------------------------------------------------------------------
-# Internal service client
-# ---------------------------------------------------------------------------
-
+# Reuse a single httpx client pool across all internal reverse-proxy calls
 _http_client: httpx.AsyncClient | None = None
 
 
@@ -103,20 +98,16 @@ async def _call(method: str, svc: str, path: str, **kwargs: Any) -> Any:
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
 
 
-# ---------------------------------------------------------------------------
-# Lifespan
-# ---------------------------------------------------------------------------
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _http_client
     _http_client = httpx.AsyncClient(timeout=10.0)
 
-    # Ensure token exists
+    # bootstrap admin token file if not already present
     token = get_current_token()
     logger.info("API Gateway started", extra={"token_file": str(settings.token_file.expanduser())})
 
-    # Connect event bus and subscribe for WebSocket fan-out
+    # connect redis bus & subscribe to events for ws streaming
     await bus.connect()
     topics = [SCAN_COMPLETED, DEVICE_NEW, DEVICE_TRUST_CHANGED, ALERT_CREATED]
     _sub_task = asyncio.create_task(bus.subscribe(topics, _event_fan_out))
@@ -127,10 +118,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await bus.close()
     await _http_client.aclose()
 
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="HomeGuard API Gateway",
@@ -148,10 +135,6 @@ app.add_middleware(
 )
 
 API = "/api/v1"
-
-# ---------------------------------------------------------------------------
-# Health
-# ---------------------------------------------------------------------------
 
 SERVICES = ["scanner", "discovery", "identity", "trust", "notifier", "inventory"]
 
@@ -177,16 +160,15 @@ async def aggregated_health(_: str = Depends(require_token)) -> dict[str, Any]:
     return {"overall": overall, "services": results}
 
 
-# ---------------------------------------------------------------------------
-# Scans
-# ---------------------------------------------------------------------------
+# --- scan triggers & status ---
 
 @app.post(f"{API}/scans", status_code=202)
 async def start_scan(body: ScanCreate, _: str = Depends(require_token)) -> dict[str, Any]:
-    # Create scan record in inventory
+    # register scan in inventory first to get scan_id
     scan_data = await _call("POST", "inventory", "/scans", params={"scan_type": body.type.value})
     scan_id = scan_data["id"]
-    # Trigger scanner
+
+    # ask scanner service to run the sweep
     try:
         await _call("POST", "scanner", "/scan", json={"scan_id": scan_id, "type": body.type.value})
     except Exception:
@@ -194,7 +176,7 @@ async def start_scan(body: ScanCreate, _: str = Depends(require_token)) -> dict[
     return scan_data
 
 
-@app.get(f"{API}/scans/{'{scan_id}'}")
+@app.get(f"{API}/scans/{{scan_id}}")
 async def get_scan(scan_id: str, _: str = Depends(require_token)) -> dict[str, Any]:
     return await _call("GET", "inventory", f"/scans/{scan_id}")
 
@@ -204,9 +186,7 @@ async def list_scans(_: str = Depends(require_token)) -> list[dict[str, Any]]:
     return await _call("GET", "inventory", "/scans")
 
 
-# ---------------------------------------------------------------------------
-# Devices
-# ---------------------------------------------------------------------------
+# --- device inventory proxies ---
 
 @app.get(f"{API}/devices")
 async def list_devices(
@@ -228,29 +208,27 @@ async def list_devices(
     return await _call("GET", "inventory", "/devices", params=params)
 
 
-@app.get(f"{API}/devices/{'{device_id}'}")
+@app.get(f"{API}/devices/{{device_id}}")
 async def get_device(device_id: str, _: str = Depends(require_token)) -> dict[str, Any]:
     return await _call("GET", "inventory", f"/devices/{device_id}")
 
 
-@app.patch(f"{API}/devices/{'{device_id}'}")
+@app.patch(f"{API}/devices/{{device_id}}")
 async def patch_device(device_id: str, patch: DevicePatch, _: str = Depends(require_token)) -> dict[str, Any]:
     return await _call("PATCH", "inventory", f"/devices/{device_id}", json=patch.model_dump(exclude_none=True))
 
 
-@app.get(f"{API}/devices/{'{device_id}'}/history")
+@app.get(f"{API}/devices/{{device_id}}/history")
 async def device_history(device_id: str, _: str = Depends(require_token)) -> list[dict[str, Any]]:
     return await _call("GET", "inventory", f"/devices/{device_id}/history")
 
 
-@app.get(f"{API}/devices/{'{device_id}'}/trust")
+@app.get(f"{API}/devices/{{device_id}}/trust")
 async def device_trust(device_id: str, _: str = Depends(require_token)) -> dict[str, Any]:
     return await _call("GET", "inventory", f"/devices/{device_id}/trust")
 
 
-# ---------------------------------------------------------------------------
-# Changes
-# ---------------------------------------------------------------------------
+# --- changes & timeline ---
 
 @app.get(f"{API}/changes")
 async def changes(
@@ -260,66 +238,54 @@ async def changes(
     return await _call("GET", "inventory", "/changes", params={"since": since.isoformat()})
 
 
-# ---------------------------------------------------------------------------
-# Alerts
-# ---------------------------------------------------------------------------
+# --- alerts ---
 
 @app.get(f"{API}/alerts")
 async def list_alerts(unacknowledged: bool = False, _: str = Depends(require_token)) -> list[dict[str, Any]]:
     return await _call("GET", "inventory", "/alerts", params={"unacknowledged": unacknowledged})
 
 
-@app.post(f"{API}/alerts/{'{alert_id}'}/ack")
+@app.post(f"{API}/alerts/{{alert_id}}/ack")
 async def ack_alert(alert_id: str, _: str = Depends(require_token)) -> dict[str, Any]:
     return await _call("POST", "inventory", f"/alerts/{alert_id}/ack")
 
 
-# ---------------------------------------------------------------------------
-# Network info
-# ---------------------------------------------------------------------------
+# --- network & interface telemetry ---
 
 @app.get(f"{API}/network")
 async def network(_: str = Depends(require_token)) -> dict[str, Any]:
     return await _call("GET", "scanner", "/network")
 
 
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
+# --- settings kv ---
 
-@app.get(f"{API}/settings/{'{key}'}")
+@app.get(f"{API}/settings/{{key}}")
 async def get_setting(key: str, _: str = Depends(require_token)) -> dict[str, Any]:
     return await _call("GET", "inventory", f"/settings/{key}")
 
 
-@app.put(f"{API}/settings/{'{key}'}")
+@app.put(f"{API}/settings/{{key}}")
 async def put_setting(key: str, body: dict[str, Any], _: str = Depends(require_token)) -> dict[str, Any]:
     return await _call("PUT", "inventory", f"/settings/{key}", json=body)
 
 
-# ---------------------------------------------------------------------------
-# WebSocket stream
-# ---------------------------------------------------------------------------
+# --- websocket real-time feed ---
 
 @app.websocket(f"{API}/stream")
 async def stream(websocket: WebSocket) -> None:
-    # Basic token check via query param for WebSocket
     token = websocket.query_params.get("token")
     if not token or token != get_current_token():
         await websocket.close(code=4001)
         return
+
     await manager.connect(websocket)
     try:
         while True:
-            # keep connection alive, wait for client ping
+            # keep connection alive, wait for client heartbeat/ping
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     uvicorn.run("services.api_gateway.main:app", host=settings.api_host, port=settings.api_port, reload=False)

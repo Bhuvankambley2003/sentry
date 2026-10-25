@@ -1,4 +1,4 @@
-"""Scanner service — ARP/ping sweep, publishes device.seen events."""
+"""Scanner service — subnet discovery & ARP sweeps, broadcasts device.seen."""
 from __future__ import annotations
 
 import asyncio
@@ -27,9 +27,9 @@ logger = get_logger(__name__, service="scanner")
 settings = get_settings()
 bus = get_bus()
 
-# Current network info (cached)
+# Cached network topology info
 _net_info = None
-_privileged = True  # set to False via --no-sudo
+_privileged = True  # modified via --no-sudo CLI flag
 
 
 class ScanRequest(BaseModel):
@@ -38,16 +38,11 @@ class ScanRequest(BaseModel):
     subnet: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Core scan logic
-# ---------------------------------------------------------------------------
-
+# Core scan cycle
 async def run_scan(scan_id: str, subnet: str | None = None, privileged: bool = True) -> int:
-    """Execute one scan cycle. Returns count of discovered hosts."""
     global _net_info
     if _net_info is None:
         _net_info = get_network_info()
-
     if not _net_info:
         logger.error("Cannot scan: network info unavailable")
         return 0
@@ -63,6 +58,7 @@ async def run_scan(scan_id: str, subnet: str | None = None, privileged: bool = T
         return 0
 
     count = 0
+    # Stream discovered hosts to Redis
     for host in hosts:
         await bus.publish(DEVICE_SEEN, DeviceSeenEvent(
             ip=host.ip,
@@ -83,10 +79,6 @@ async def run_scan(scan_id: str, subnet: str | None = None, privileged: bool = T
     return count
 
 
-# ---------------------------------------------------------------------------
-# Lifespan
-# ---------------------------------------------------------------------------
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _net_info
@@ -101,10 +93,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="HomeGuard Scanner Service", version="0.1.0", lifespan=lifespan)
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "service": "scanner", "version": "0.1.0"}
@@ -112,7 +100,7 @@ async def health() -> dict:
 
 @app.post("/scan")
 async def trigger_scan(req: ScanRequest) -> dict:
-    """Trigger a scan asynchronously (fire-and-forget)."""
+    # Run scan asynchronously in background task
     asyncio.create_task(run_scan(req.scan_id, req.subnet, privileged=_privileged))
     return {"status": "started", "scan_id": req.scan_id}
 
@@ -130,10 +118,6 @@ async def network_info() -> dict:
         "ssid": info.ssid,
     }
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse

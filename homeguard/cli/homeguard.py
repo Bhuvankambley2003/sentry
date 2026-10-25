@@ -18,6 +18,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
+from rich.markup import escape
 
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -32,10 +33,6 @@ settings = get_settings()
 PID_DIR = Path("~/.homeguard").expanduser()
 TOKEN_PATH = settings.token_file.expanduser()
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _api(token: str) -> httpx.Client:
     base = f"http://{settings.api_host}:{settings.api_port}"
@@ -78,9 +75,10 @@ def _is_running(pid: int | None) -> bool:
         return False
 
 
+# In order of startup dependencies
 SERVICES_ORDER = [
     ("inventory",   settings.inventory_port,  False),
-    ("scanner",     settings.scanner_port,    True),   # may need sudo
+    ("scanner",     settings.scanner_port,    True),   # may need sudo for raw sockets
     ("api_gateway", settings.api_port,        False),
 ]
 
@@ -120,14 +118,10 @@ def _wait_for_service(port: int, timeout: int = 15) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
-
 @app.command()
 def start(no_sudo: bool = typer.Option(False, "--no-sudo", help="Don't use sudo for ARP scanner")) -> None:
     """Start Redis check and all HomeGuard services."""
-    # Check Redis
+    # Check Redis first so services don't immediately crash on bus connect
     try:
         import redis
         r = redis.from_url(settings.redis_url)
@@ -163,7 +157,7 @@ def start(no_sudo: bool = typer.Option(False, "--no-sudo", help="Don't use sudo 
 @app.command()
 def stop() -> None:
     """Gracefully stop all HomeGuard services."""
-    # Write last_session_end setting via API
+    # Record timestamp so next session diff can compute delta
     token = _load_token()
     if token:
         try:
@@ -241,7 +235,7 @@ def scan(full: bool = typer.Option(False, "--full", help="Full scan (same as qui
         scan_id = scan_data.get("id")
         console.print(f"[blue]Scan {scan_id} started...[/blue]")
 
-        # Poll for completion
+        # Poll scan progress until completed or timed out
         for _ in range(60):
             time.sleep(2)
             r = client.get(f"/api/v1/scans/{scan_id}")
@@ -305,10 +299,10 @@ def devices() -> None:
         online_str = "[green]●[/green]" if d.get("online") else "[dim]○[/dim]"
         table.add_row(
             d.get("current_ip") or "-",
-            d.get("current_mac", ""),
+            escape(d.get("current_mac", "")),
             (d.get("vendor") or "Unknown")[:20],
             d.get("device_type", "unknown"),
-            label[:30],
+            escape(label[:30]),
             _band_color(score),
             _band_label(score),
             d.get("status", "unknown"),
@@ -327,7 +321,7 @@ def changes() -> None:
         raise typer.Exit(1)
 
     with _api(token) as client:
-        # Get last_session_end setting
+        # Check when last session stopped
         resp = client.get("/api/v1/settings/last_session_end")
         since_str = None
         if resp.status_code == 200:

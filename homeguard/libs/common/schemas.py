@@ -9,10 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
-# ---------------------------------------------------------------------------
-# Enumerations
-# ---------------------------------------------------------------------------
-
+# Device classification & types
 class DeviceType(str, Enum):
     phone = "phone"
     laptop = "laptop"
@@ -51,10 +48,7 @@ class ScanType(str, Enum):
     full = "full"
 
 
-# ---------------------------------------------------------------------------
-# Trust
-# ---------------------------------------------------------------------------
-
+# Trust scoring structures
 class TrustReason(BaseModel):
     rule: str
     delta: int
@@ -68,10 +62,7 @@ class TrustResult(BaseModel):
     band: str  # "trusted" | "probably_fine" | "needs_attention" | "suspicious"
 
 
-# ---------------------------------------------------------------------------
-# Device
-# ---------------------------------------------------------------------------
-
+# Device entities and sighting logs
 class ServiceRecord(BaseModel):
     id: UUID | None = None
     device_id: UUID | None = None
@@ -115,10 +106,7 @@ class DevicePatch(BaseModel):
     status: DeviceStatus | None = None
 
 
-# ---------------------------------------------------------------------------
-# Scans
-# ---------------------------------------------------------------------------
-
+# Network scan models
 class ScanCreate(BaseModel):
     type: ScanType = ScanType.quick
 
@@ -132,10 +120,7 @@ class ScanResponse(BaseModel):
     status: str = "running"  # running | completed | failed
 
 
-# ---------------------------------------------------------------------------
-# Alerts
-# ---------------------------------------------------------------------------
-
+# System & security alerts
 class AlertResponse(BaseModel):
     id: UUID
     device_id: UUID | None = None
@@ -146,10 +131,7 @@ class AlertResponse(BaseModel):
     acknowledged: bool = False
 
 
-# ---------------------------------------------------------------------------
-# Network info
-# ---------------------------------------------------------------------------
-
+# Local network environment
 class NetworkInfo(BaseModel):
     subnet: str | None = None
     gateway_ip: str | None = None
@@ -160,10 +142,7 @@ class NetworkInfo(BaseModel):
     warning: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Health
-# ---------------------------------------------------------------------------
-
+# Microservice health checks
 class ServiceHealth(BaseModel):
     service: str
     status: str  # ok | degraded | down
@@ -176,10 +155,7 @@ class AggregatedHealth(BaseModel):
     services: list[ServiceHealth]
 
 
-# ---------------------------------------------------------------------------
-# Changes (since last session)
-# ---------------------------------------------------------------------------
-
+# Session change diffs
 class ChangeSummary(BaseModel):
     since: datetime
     new_devices: list[DeviceResponse] = Field(default_factory=list)

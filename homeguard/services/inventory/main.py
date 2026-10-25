@@ -51,18 +51,14 @@ from services.inventory.models import Base
 logger = get_logger(__name__, service="inventory")
 settings = get_settings()
 
-# ---------------------------------------------------------------------------
-# Database setup
-# ---------------------------------------------------------------------------
-
-# Expand ~ in DATABASE_URL
+# expand ~ in db url if configured that way
 _db_url = settings.database_url
 if _db_url.startswith("sqlite+aiosqlite:///~"):
     _db_url = _db_url.replace("~", str(Path.home()), 1)
 elif "~" in _db_url:
     _db_url = os.path.expanduser(_db_url)
 
-# Ensure the directory exists
+# make sure parent dir exists before sqlite engine tries to open file
 _db_path_str = _db_url.replace("sqlite+aiosqlite:///", "")
 Path(_db_path_str).parent.mkdir(parents=True, exist_ok=True)
 
@@ -80,13 +76,10 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
-# ---------------------------------------------------------------------------
-# Event listener (background subscriber)
-# ---------------------------------------------------------------------------
-
 bus = get_bus()
 
 
+# Background subscriber handler for redis events
 async def handle_event(topic: str, data: dict[str, Any]) -> None:
     async with AsyncSessionLocal() as session:
         try:
@@ -97,6 +90,7 @@ async def handle_event(topic: str, data: dict[str, Any]) -> None:
                 scan_id = data.get("scan_id")
                 if not mac:
                     return
+
                 device, is_new = await repo.upsert_device(
                     session, mac=mac, ip=ip, hostname=hostname, scan_id=scan_id
                 )
@@ -124,6 +118,7 @@ async def handle_event(topic: str, data: dict[str, Any]) -> None:
                 mac = data.get("mac", "")
                 if not mac:
                     return
+
                 device = await repo.get_device_by_mac(session, mac)
                 if device:
                     await repo.patch_device(
@@ -137,6 +132,7 @@ async def handle_event(topic: str, data: dict[str, Any]) -> None:
                 device_id = data.get("device_id", "")
                 if not device_id:
                     return
+
                 await repo.patch_device(
                     session,
                     device_id=device_id,
@@ -158,10 +154,6 @@ async def handle_event(topic: str, data: dict[str, Any]) -> None:
             await session.rollback()
             logger.error("Event handling failed", extra={"topic": topic, "exc": str(exc)})
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _device_to_schema(d: models.Device) -> DeviceResponse:
     reasons: list[TrustReason] = []
@@ -195,18 +187,14 @@ def _device_to_schema(d: models.Device) -> DeviceResponse:
     )
 
 
-# ---------------------------------------------------------------------------
-# App lifecycle
-# ---------------------------------------------------------------------------
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Create tables
+    # bootstrap sqlite tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created/verified")
 
-    # Connect event bus
+    # Connect event bus and start redis subscriber loop
     await bus.connect()
 
     import asyncio
@@ -223,16 +211,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="HomeGuard Inventory Service", version="0.1.0", lifespan=lifespan)
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inventory", "version": "0.1.0"}
 
 
-# --- Devices ---
+# --- device routes ---
 
 @app.get("/devices", response_model=list[DeviceResponse])
 async def list_devices(
@@ -311,7 +295,7 @@ async def device_trust(device_id: str, session: AsyncSession = Depends(get_sessi
     return {"device_id": device_id, "score": device.trust_score, "reasons": reasons}
 
 
-# --- Scans ---
+# --- scan records ---
 
 @app.post("/scans", response_model=ScanResponse, status_code=201)
 async def create_scan(
@@ -370,7 +354,7 @@ async def get_scan(scan_id: str, session: AsyncSession = Depends(get_session)) -
     )
 
 
-# --- Alerts ---
+# --- alert endpoints ---
 
 @app.get("/alerts", response_model=list[AlertResponse])
 async def list_alerts(
@@ -400,7 +384,7 @@ async def ack_alert(alert_id: str, session: AsyncSession = Depends(get_session))
     return {"status": "acknowledged"}
 
 
-# --- Changes ---
+# --- change diffs ---
 
 @app.get("/changes", response_model=ChangeSummary)
 async def changes(
@@ -416,7 +400,7 @@ async def changes(
     )
 
 
-# --- Settings ---
+# --- kv settings ---
 
 @app.get("/settings/{key}")
 async def get_setting(key: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
@@ -429,10 +413,6 @@ async def put_setting(key: str, body: dict[str, Any], session: AsyncSession = De
     await repo.set_setting(session, key, body.get("value"))
     return {"key": key, "status": "updated"}
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     uvicorn.run("services.inventory.main:app", host="127.0.0.1", port=settings.inventory_port, reload=False)

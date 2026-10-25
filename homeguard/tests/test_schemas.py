@@ -49,7 +49,7 @@ def test_trust_score_clamp() -> None:
         DeviceResponse(
             id=uuid.uuid4(),
             current_mac="AA:BB:CC:DD:EE:FF",
-            trust_score=100,  # invalid
+            trust_score=101,  # invalid (> 100)
             first_seen=datetime.now(timezone.utc),
             last_seen=datetime.now(timezone.utc),
         )

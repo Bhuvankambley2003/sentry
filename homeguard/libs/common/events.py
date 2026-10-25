@@ -7,11 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-
-# ---------------------------------------------------------------------------
-# Topic constants
-# ---------------------------------------------------------------------------
-
+# Redis pub/sub topic names
 SCAN_REQUESTED = "scan.requested"
 SCAN_COMPLETED = "scan.completed"
 DEVICE_SEEN = "device.seen"
@@ -22,10 +18,7 @@ DEVICE_TRUST_CHANGED = "device.trust_changed"
 ALERT_CREATED = "alert.created"
 
 
-# ---------------------------------------------------------------------------
-# Event payloads
-# ---------------------------------------------------------------------------
-
+# Event data payloads published across topics
 class ScanRequestedEvent(BaseModel):
     scan_id: UUID
     type: str = "quick"
