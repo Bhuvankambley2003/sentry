@@ -32,7 +32,7 @@ The image links below will automatically render your screenshots on GitHub or ID
 ### 1. Service Status & Health Monitoring
 _Verifying all event-driven microservices are healthy on localhost._
 
-![HomeGuard Service Status](screenshots/Screenshot 2026-10-23 at 02.44.05.png)
+![HomeGuard Service Status](./screenshots/status.png)
 
 <!-- ---
 
@@ -60,7 +60,7 @@ _Highlighting new devices that joined the network since the last session._
 ### 5. Interactive OpenAPI / Swagger Dashboard
 _Interactive REST API documentation and testing interface at `http://127.0.0.1:8000/docs`._
 
-![Swagger API Documentation](screenshots/Screenshot 2026-10-23 at 02.53.08.png)
+![Swagger API Documentation](./screenshots/swagger_docs.png)
 
 ---
 
