@@ -57,10 +57,7 @@ _Highlighting new devices that joined the network since the last session._
 
 --- -->
 
-### 5. Interactive OpenAPI / Swagger Dashboard
-_Interactive REST API documentation and testing interface at `http://127.0.0.1:8000/docs`._
 
-![Swagger API Documentation](./screenshots/swagger_docs.png)
 
 ---
 
